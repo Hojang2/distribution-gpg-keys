@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 from copr.v3 import Client
+from copr.v3.pagination import next_page
 from copr import create_client2_from_params
 
 import requests
@@ -9,28 +10,29 @@ from argparse import RawTextHelpFormatter
 import os.path
 
 
-def get_gpg(project):
-    url = be_url_tmpl.format(**{'username': project.owner, 'project_name': project.name})
-    r = requests.get(url)
+def get_gpg(url):
+    print(url.replace("@", "%40"))
+
+    r = requests.get(url.replace("@", "%40"))
     return r.text
 
 
-def gpg_out(isolate_file, file_name, project):
+def gpg_out(isolate_file, file_name, url):
     if isolate_file:
         if not os.path.isfile(file_name):
             with open(file_name, "w") as f:
-                f.write(get_gpg(project))
+                f.write(get_gpg(url))
 
             print("Saved {0}".format(file_name))
         else:
             print("Skipping {0} - already downloaded.".format(file_name))
     elif output_file:
-        output_file.write(get_gpg(project))
+        output_file.write(get_gpg(url))
     else:
-        print(get_gpg(project))
+        print(get_gpg(url))
 
 
-def main():
+def run_2():
     kwargs = {}
 
     if args.user:
@@ -41,28 +43,52 @@ def main():
     _limit = 100
 
     while True:
-        if args.api == "3":
-            projects = cli.project_proxy.get_list(ownername=None)
-            # TODO: Get all projects from copr
-            # Now API 3 does not support thi request
-        else:
-            projects = cli.projects.get_list(offset=_offset, limit=_limit, **kwargs)
+        projects = cli.projects.get_list(offset=_offset, limit=_limit, **kwargs)
 
         if not projects:
             break
 
         for project in projects:
             file_name = args.path + "copr-{0}-{1}.gpg".format(project.owner, project.name)
+            url = be_url_tmpl.format(**{'username': project.owner, 'project_name': project.name})
 
-            if "404 Not Found" in get_gpg(project):
-                print("Deleting {0} - project key doesn't exist.".format(file_name))
-                if os.path.isfile(file_name):
-                    print("Skipping {} - already deleted.".format(file_name))
-                    os.remove(file_name)
+            if "404 Not Found" in get_gpg(url):
+                not_found(file_name)
             else:
-                gpg_out(args.isolate_files, file_name, project)
+                gpg_out(args.isolate_files, file_name, url)
 
         _offset += _limit
+
+
+def run_3():
+    projects = cli.project_proxy.get_list(ownername=None, pagination={"limit": 10})
+    while projects:
+        if not projects:
+            break
+
+        for project in projects:
+            file_name = args.path + "copr-{0}-{1}.gpg".format(project.ownername, project.name)
+            url = be_url_tmpl.format(**{'username': project.ownername, 'project_name': project.name})
+            if "404 Not Found" in get_gpg(url):
+                not_found(file_name)
+            else:
+                gpg_out(args.isolate_files, file_name, url)
+
+        projects = next_page(projects)
+
+
+def not_found(file_name):
+    print("Deleting {0} - project key doesn't exist.".format(file_name))
+    if os.path.isfile(file_name):
+        print("Skipping {} - already deleted.".format(file_name))
+        os.remove(file_name)
+
+
+def main():
+    if args.api == "3":
+        run_3()
+    else:
+        run_2()
 
 
 parser = argparse.ArgumentParser(description='Download GPG keys for COPR projects.',
@@ -89,8 +115,8 @@ args = parser.parse_args()
 be_url_tmpl = args.beurl+'/results/{username}/{project_name}/pubkey.gpg'
 
 if args.api == "3":
-
     cli = Client.create_from_config_file()
+    cli.config["copr_url"] = args.feurl
 else:
     cli = create_client2_from_params(root_url=args.feurl)
 
